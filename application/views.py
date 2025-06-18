@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
-from django.core.files.base import File, ContentFile
+from django.core.files.base import File
 from django.utils.timezone import now
 from .models import TrafficLog, JunctionSignals
 from .detecter import EnhancedVehicleDetector
@@ -19,11 +19,60 @@ from rest_framework import status
 from .EnhancedTrafficSignal import EnhancedTrafficSignal
 from rest_framework.parsers import JSONParser
 from rest_framework.decorators import api_view
+from django.conf import settings
 
-# Load areas.json
+@api_view(['POST', 'GET'])
+def save_area(request):
+    if request.method == 'POST':
+        signal_id = request.data.get('signal_id')
+        area = request.data.get('area')
+
+        if not signal_id or not area or len(area) != 4:
+            return Response({'error': 'signal_id and 4-point area required'}, status=400)
+
+        # Path to the areas.json file
+        areas_file = os.path.join(os.path.dirname(__file__), 'areas.json')
+
+        # Load existing areas
+        if os.path.exists(areas_file):
+            with open(areas_file, 'r') as f:
+                areas_data = json.load(f)
+        else:
+            areas_data = {}
+
+        # Save or update area for this signal
+        areas_data[signal_id.upper()] = area
+
+        # Write back to file
+        with open(areas_file, 'w') as f:
+            json.dump(areas_data, f, indent=4)
+
+        return Response({'message': f'Area for signal {signal_id} saved successfully'})
+    
+    elif request.method == 'GET':
+        signal_id = request.query_params.get('signal_id')
+        if not signal_id:
+            return Response({'error': 'signal_id is required'}, status=400)
+
+        # Path to the areas.json file
+        areas_file = os.path.join(os.path.dirname(__file__), 'areas.json')
+
+        # Load existing areas
+        if os.path.exists(areas_file):
+            with open(areas_file, 'r') as f:
+                areas_data = json.load(f)
+                area = areas_data.get(signal_id.upper())
+                if area:
+                    return Response({'signal_id': signal_id.upper(), 'area': area})
+                else:
+                    return Response({'error': f'No area found for signal {signal_id}'}, status=404)
+        else:
+            return Response({'error': 'No areas have been defined yet'}, status=404)
+
 areas_path = os.path.join(os.path.dirname(__file__), 'areas.json')
 with open(areas_path, 'r') as f:
     AREA_POLYGONS = json.load(f)
+
 # Initialize YOLO detector
 detecter = EnhancedVehicleDetector()
 
@@ -72,6 +121,13 @@ class TrafficLogView(APIView):
 
         print(f"[INFO] Processing videos for signals {signal_ids} at junction {junction_id}")
         
+         # ⬇️ Move area loading here (DYNAMIC)
+        areas_path = os.path.join(os.path.dirname(__file__), 'areas.json')
+        try:
+            with open(areas_path, 'r') as f:
+                AREA_POLYGONS = json.load(f)
+        except Exception as e:
+            return Response({'error': f'Failed to load area definitions: {e}'}, status=500)
         # Convert letter signal_id to number
         response_data = []
 
@@ -107,7 +163,9 @@ class TrafficLogView(APIView):
 
             # Get the appropriate area for this signal
             area_index = ord(signal_id) - ord('A')  # Convert A->0, B->1, etc.
-            area = AREA_POLYGONS[area_index % len(AREA_POLYGONS)]
+            area = AREA_POLYGONS.get(signal_id)
+            if not area or len(area) != 4:
+                return Response({'error': f'Area not defined for signal {signal_id}'}, status=400)
 
             # Tracking
             total_vehicle_count = 0
