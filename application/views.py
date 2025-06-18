@@ -8,7 +8,6 @@ from django.utils.timezone import now
 from .models import TrafficLog, JunctionSignals
 from .detecter import EnhancedVehicleDetector
 from django.conf import settings
-import numpy as np
 import cv2
 import os
 import tempfile
@@ -19,7 +18,6 @@ from rest_framework import status
 from .EnhancedTrafficSignal import EnhancedTrafficSignal
 from rest_framework.parsers import JSONParser
 from rest_framework.decorators import api_view
-from django.conf import settings
 
 @api_view(['POST', 'GET'])
 def save_area(request):
