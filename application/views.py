@@ -5,9 +5,10 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from django.core.files.base import File
 from django.utils.timezone import now
-from .models import TrafficLog, JunctionSignals
+from .models import TrafficLog, JunctionSignals, Settings
 from .detecter import EnhancedVehicleDetector
 from django.conf import settings
+import numpy as np
 import cv2
 import os
 import tempfile
@@ -18,6 +19,9 @@ from rest_framework import status
 from .EnhancedTrafficSignal import EnhancedTrafficSignal
 from rest_framework.parsers import JSONParser
 from rest_framework.decorators import api_view
+from .serializers import SettingsSerializer
+from .utils import letter_to_number
+import traceback
 
 @api_view(['POST', 'GET'])
 def save_area(request):
@@ -74,19 +78,6 @@ with open(areas_path, 'r') as f:
 # Initialize YOLO detector
 detecter = EnhancedVehicleDetector()
 
-def letter_to_number(signal_id):
-    """Convert signal letter (A,B,C,D) to number (1,2,3,4)"""
-    if isinstance(signal_id, int):
-        return signal_id
-    return ord(signal_id.upper()) - ord('A') + 1
-
-def number_to_letter(number):
-    """Convert signal number (1,2,3,4) to letter (A,B,C,D)"""
-    return chr(ord('A') + number - 1)
-
-# def index(request):
-#     return render(request, 'index.html')
-
 @method_decorator(csrf_exempt, name='dispatch')
 class TrafficLogView(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -111,10 +102,10 @@ class TrafficLogView(APIView):
             return Response({'error': 'Signal ID is required'}, status=400)
         if not junction_id:
             return Response({'error': 'junction_id is required'}, status=400)
-
-        if len(video_files) != len(signal_ids):
+        
+        if not video_files or not signal_ids or len(video_files) != len(signal_ids):
             return Response({
-                'error': f'Number of videos ({len(video_files)}) does not match number of signal IDs ({len(signal_ids)})'
+                'error': 'Each uploaded video must have a corresponding signal_id.'
             }, status=400)
 
         print(f"[INFO] Processing videos for signals {signal_ids} at junction {junction_id}")
@@ -164,6 +155,19 @@ class TrafficLogView(APIView):
             area = AREA_POLYGONS.get(signal_id)
             if not area or len(area) != 4:
                 return Response({'error': f'Area not defined for signal {signal_id}'}, status=400)
+            
+            # ---- RESCALE COORDINATES TO MATCH VIDEO SIZE ----
+            CANVAS_WIDTH = 640   # frontend canvas width
+            CANVAS_HEIGHT = 360  # frontend canvas height
+
+            def scale_points(points, actual_width, actual_height):
+                return [
+                    [int(p[0] * actual_width / CANVAS_WIDTH), int(p[1] * actual_height / CANVAS_HEIGHT)]
+                    for p in points
+                ]
+
+            scaled_area = scale_points(area, width, height)
+
 
             # Tracking
             total_vehicle_count = 0
@@ -175,7 +179,7 @@ class TrafficLogView(APIView):
                 if not ret:
                     break
 
-                vc, wt, processed_frame, type_counts = detecter.detect_vehicles_in_area(frame, area)
+                vc, wt, processed_frame, type_counts = detecter.detect_vehicles_in_area(frame, scaled_area)
                 total_vehicle_count += vc
                 total_weight += wt
                 for vt, count in type_counts.items():
@@ -303,6 +307,20 @@ def latest_stats(request):
         'avg_efficiency': avg_efficiency
     })
 
+
+@api_view(['POST'])
+def save_settings(request):
+    try:
+        serializer = SettingsSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        print(serializer.errors)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        print("Exception in save_settings:", e)
+        traceback.print_exc()
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @method_decorator(csrf_exempt, name='dispatch')
 class AdaptiveGreenTime(APIView):
